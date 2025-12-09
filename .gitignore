@@ -1,0 +1,23 @@
+# Python bytecode / キャッシュ
+__pycache__/
+*.pyc
+
+# 仮想環境（もし作る場合）
+.venv/
+.env/
+*.env
+
+# ログ
+.log
+logs/
+*.log
+/.logs/
+
+# 画像の大量データは除外（必要ならここを調整）
+/photos/
+/photos_raw/
+/tmp/
+/waste/
+
+# その他
+.DS_Store
