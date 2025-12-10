@@ -5,7 +5,7 @@ Pimoroni Inky Impression 13.3" (2025 Edition / 1600x1200) 用 スライドショ
 - スライド表示状態の保存（キュー / 全枚数）
 - get_throttled 監視とは別に、表示カウンタ & ハートビートファイルを更新
 - 画像ごとに撮影日 + 経過年月を四隅のどこかにオーバーレイ
-- 表示カウンタもパネル上に表示
+- 表示カウンタは「日付オーバーレイの対角線上の隅」に表示
 """
 
 # ===== 標準ライブラリ =====
@@ -286,6 +286,10 @@ def enhance_image(img):
 
 
 def add_date_overlay(img, capture_date):
+    """
+    撮影日 + 経過年月を四隅のどこかに描画し、
+    どの隅を使ったか（'top-left' など）の文字列も返す。
+    """
     draw = ImageDraw.Draw(img)
     try:
         elapsed_font = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
@@ -309,7 +313,9 @@ def add_date_overlay(img, capture_date):
     margin = CONFIG["MARGIN"]
     padding = CONFIG["BACKGROUND_PADDING"]
 
+    # 日付を描画する四隅をランダムに決定
     position = random.choice(CONFIG["DATE_POSITIONS"])
+
     x = (
         img.width - max_width - margin - padding
         if "right" in position
@@ -332,13 +338,15 @@ def add_date_overlay(img, capture_date):
         fill="black",
         font=elapsed_font,
     )
-    return img
+
+    # 画像 + 使用した位置を返す
+    return img, position
 
 
-def add_counter_overlay(img, counter: int):
+def add_counter_overlay(img, counter: int, date_position: str):
     """
     パネル上に表示カウンタをオーバーレイする
-    （左下固定でシンプルに表示）
+    日付オーバーレイとは対角線上の隅に表示する
     """
     draw = ImageDraw.Draw(img)
     try:
@@ -356,8 +364,24 @@ def add_counter_overlay(img, counter: int):
     margin = CONFIG["MARGIN"]
     padding = CONFIG["BACKGROUND_PADDING"]
 
-    x = margin + padding
-    y = img.height - text_height - margin - padding
+    # 日付表示位置に対する「対角の位置」を決定
+    opposite_map = {
+        "bottom-right": "top-left",
+        "top-right": "bottom-left",
+        "top-left": "bottom-right",
+        "bottom-left": "top-right",
+    }
+    position = opposite_map.get(date_position, "bottom-left")
+
+    if "right" in position:
+        x = img.width - text_width - margin - padding
+    else:
+        x = margin + padding
+
+    if "bottom" in position:
+        y = img.height - text_height - margin - padding
+    else:
+        y = margin + padding
 
     draw.rectangle(
         (x - padding, y - padding, x + text_width + padding, y + text_height + padding),
@@ -401,9 +425,12 @@ def prepare_image(image_path, inky_display, display_counter: int):
             )
 
             capture_date = extract_capture_date(image_path)
-            with_date = add_date_overlay(cropped_img, capture_date)
 
-            with_counter = add_counter_overlay(with_date, display_counter)
+            # 日付オーバーレイ + その位置
+            with_date, date_pos = add_date_overlay(cropped_img, capture_date)
+
+            # 日付の対角線上にカウンタを描画
+            with_counter = add_counter_overlay(with_date, display_counter, date_pos)
 
             return with_counter
 
