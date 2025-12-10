@@ -7,6 +7,8 @@ Raspberry Pi の電圧/サーマルスロットリング状態を監視し、
 - 前回状態と比較して変化があれば ntfy.sh に通知
 - ログは ~/.logs/throttled_monitor.log
 - 状態ファイルは ~/.cache/throttled_state.json
+
+※ ntfy の URL は .env の NTFY_THROTTLED_URL から読み込みます。
 """
 
 import subprocess
@@ -16,9 +18,17 @@ import json
 from datetime import datetime
 from urllib import request, error as urlerror
 
+from dotenv import load_dotenv  # ← 追加
+
+# ===== .env 読み込み =====
+# （例: /home/bonsai/inky133-slideshow/.env）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 # ===== 設定 =====
-NTFY_URL = "https://ntfy.sh/hO5qZAhnDf2srhuP"  # あなた専用トピック
-HOSTNAME = os.uname().nodename                 # 例: wc-inky133
+# ここでは生の URL は書かず、環境変数から取得する
+NTFY_URL = os.getenv("NTFY_THROTTLED_URL")  # 例: https://ntfy.sh/xxxxxx
+HOSTNAME = os.uname().nodename              # 例: wc-inky133
 
 LOG_DIR = os.path.expanduser("~/.logs")
 LOG_FILE = os.path.join(LOG_DIR, "throttled_monitor.log")
@@ -114,6 +124,13 @@ def save_state(value, flags):
 
 def send_ntfy(title: str, message: str, tags=None, priority=None):
     """ntfy.sh に通知を送信する（タイトルは英語のみ）"""
+    if not NTFY_URL:
+        # URL が設定されていない場合は、何も送らずログだけ残す
+        logging.warning(
+            "NTFY_THROTTLED_URL が .env に設定されていないため、通知をスキップします。"
+        )
+        return
+
     data = message.encode("utf-8")
     headers = {"Title": title}
     if tags:
@@ -191,6 +208,7 @@ def main():
         send_ntfy(title, body, tags=["raspi", "throttle"], priority=3)
         save_state(value, flags)
         logging.info("初回通知完了")
+        logging.info("===== throttled monitor end =====")
         return
 
     # 状態変化チェック
