@@ -6,7 +6,7 @@ Pimoroni Inky Impression 13.3" (2025 Edition / 1600x1200) 用 スライドショ
 - get_throttled 監視とは別に、表示カウンタ & ハートビートファイルを更新
 - 画像ごとに撮影日 + 経過年月を四隅のどこかにオーバーレイ
 - （変更）ナンバリング表示を削除し、日付オーバーレイの対角線上に
-          「スライド更新日時」と「起動からの経過時間」を表示
+          「スライド更新日時」と「起動からの経過時間（day対応）」を表示
 """
 
 # ===== 標準ライブラリ =====
@@ -348,7 +348,7 @@ def add_status_overlay(img, date_position: str, slide_updated_at: datetime, prog
     """
     日付オーバーレイとは対角線上の隅に、
     - スライド更新日時
-    - プログラム起動からの経過時間（uptime）
+    - プログラム起動からの経過時間（uptime, day対応）
     を表示する
     """
     draw = ImageDraw.Draw(img)
@@ -362,10 +362,17 @@ def add_status_overlay(img, date_position: str, slide_updated_at: datetime, prog
     uptime_seconds = int((slide_updated_at - program_started_at).total_seconds())
     if uptime_seconds < 0:
         uptime_seconds = 0
-    hh = uptime_seconds // 3600
-    mm = (uptime_seconds % 3600) // 60
-    ss = uptime_seconds % 60
-    uptime_str = f"Uptime: {hh:02d}:{mm:02d}:{ss:02d}"
+
+    days = uptime_seconds // 86400
+    rem = uptime_seconds % 86400
+    hh = rem // 3600
+    mm = (rem % 3600) // 60
+    ss = rem % 60
+
+    if days > 0:
+        uptime_str = f"Uptime: {days}d {hh:02d}:{mm:02d}:{ss:02d}"
+    else:
+        uptime_str = f"Uptime: {hh:02d}:{mm:02d}:{ss:02d}"
 
     lines = [updated_str, uptime_str]
 
