@@ -5,7 +5,8 @@ Pimoroni Inky Impression 13.3" (2025 Edition / 1600x1200) 用 スライドショ
 - スライド表示状態の保存（キュー / 全枚数）
 - get_throttled 監視とは別に、表示カウンタ & ハートビートファイルを更新
 - 画像ごとに撮影日 + 経過年月を四隅のどこかにオーバーレイ
-- 表示カウンタは「日付オーバーレイの対角線上の隅」に表示
+- （変更）ナンバリング表示を削除し、日付オーバーレイの対角線上に
+          「スライド更新日時」と「起動からの経過時間」を表示
 """
 
 # ===== 標準ライブラリ =====
@@ -29,7 +30,7 @@ load_dotenv()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.expanduser("~/.cache/slideshow_state_133.json")  # 画像キューの状態保存
-COUNTER_FILE = os.path.expanduser("~/.logs/slideshow_counter_133.txt")  # 表示カウンタ保存
+COUNTER_FILE = os.path.expanduser("~/.logs/slideshow_counter_133.txt")  # 表示カウンタ保存（表示はしないがログ用途で継続）
 HEARTBEAT_PATH = "/tmp/inky_slideshow_heartbeat"  # watchdog 用ハートビート
 
 CONFIG = {
@@ -44,7 +45,6 @@ CONFIG = {
     # --- 固定設定 ---
     "FONT_SIZE": 20,
     "DATE_FONT_SIZE": 24,
-    "COUNTER_FONT_SIZE": 20,
     "DATE_POSITIONS": ['bottom-right', 'top-right', 'top-left', 'bottom-left'],
     "MARGIN": 25,
     "BACKGROUND_PADDING": 15,
@@ -212,6 +212,7 @@ def load_state():
 def load_display_counter():
     """
     表示カウンタをファイルから読み出し
+    ※ 画面表示はしませんが、運用上の統計として残します
     """
     try:
         if os.path.exists(COUNTER_FILE):
@@ -343,23 +344,38 @@ def add_date_overlay(img, capture_date):
     return img, position
 
 
-def add_counter_overlay(img, counter: int, date_position: str):
+def add_status_overlay(img, date_position: str, slide_updated_at: datetime, program_started_at: datetime):
     """
-    パネル上に表示カウンタをオーバーレイする
-    日付オーバーレイとは対角線上の隅に表示する
+    日付オーバーレイとは対角線上の隅に、
+    - スライド更新日時
+    - プログラム起動からの経過時間（uptime）
+    を表示する
     """
     draw = ImageDraw.Draw(img)
     try:
-        counter_font = ImageFont.truetype(
-            CONFIG["FONT_PATH"], CONFIG["COUNTER_FONT_SIZE"]
-        )
+        font = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
     except OSError:
-        counter_font = ImageFont.load_default()
+        font = ImageFont.load_default()
 
-    text = f"#{counter}"
-    bbox = draw.textbbox((0, 0), text, font=counter_font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    updated_str = f"Updated: {slide_updated_at.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    uptime_seconds = int((slide_updated_at - program_started_at).total_seconds())
+    if uptime_seconds < 0:
+        uptime_seconds = 0
+    hh = uptime_seconds // 3600
+    mm = (uptime_seconds % 3600) // 60
+    ss = uptime_seconds % 60
+    uptime_str = f"Uptime: {hh:02d}:{mm:02d}:{ss:02d}"
+
+    lines = [updated_str, uptime_str]
+
+    # テキストボックスサイズ計算
+    bboxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
+    widths = [(b[2] - b[0]) for b in bboxes]
+    heights = [(b[3] - b[1]) for b in bboxes]
+
+    max_width = max(widths) if widths else 0
+    total_height = sum(heights) + (CONFIG["TEXT_PADDING"] * (len(lines) - 1))
 
     margin = CONFIG["MARGIN"]
     padding = CONFIG["BACKGROUND_PADDING"]
@@ -374,25 +390,32 @@ def add_counter_overlay(img, counter: int, date_position: str):
     position = opposite_map.get(date_position, "bottom-left")
 
     if "right" in position:
-        x = img.width - text_width - margin - padding
+        x = img.width - max_width - margin - padding
     else:
         x = margin + padding
 
     if "bottom" in position:
-        y = img.height - text_height - margin - padding
+        y = img.height - total_height - margin - padding
     else:
         y = margin + padding
 
     draw.rectangle(
-        (x - padding, y - padding, x + text_width + padding, y + text_height + padding),
+        (x - padding, y - padding, x + max_width + padding, y + total_height + padding),
         fill="white",
     )
-    draw.text((x, y), text, fill="black", font=counter_font)
+
+    yy = y
+    for i, line in enumerate(lines):
+        draw.text((x, yy), line, fill="black", font=font)
+        yy += heights[i] + (CONFIG["TEXT_PADDING"] if i < len(lines) - 1 else 0)
 
     return img
 
 
-def prepare_image(image_path, inky_display, display_counter: int):
+def prepare_image(image_path, inky_display, slide_updated_at: datetime, program_started_at: datetime, display_counter: int):
+    """
+    display_counter は表示に使いません（統計/ログ用途で main 側が保持）
+    """
     try:
         if logger:
             logger.info(f"画像処理開始: {os.path.basename(image_path)} (counter={display_counter})")
@@ -429,10 +452,10 @@ def prepare_image(image_path, inky_display, display_counter: int):
             # 日付オーバーレイ + その位置
             with_date, date_pos = add_date_overlay(cropped_img, capture_date)
 
-            # 日付の対角線上にカウンタを描画
-            with_counter = add_counter_overlay(with_date, display_counter, date_pos)
+            # 日付の対角線上に「更新日時」と「起動からの経過時間」を描画
+            with_status = add_status_overlay(with_date, date_pos, slide_updated_at, program_started_at)
 
-            return with_counter
+            return with_status
 
     except Exception as e:
         if logger:
@@ -448,6 +471,9 @@ def main():
     global logger
 
     print('=== Inky Impression 13.3" スライドショー（2025年版対応）を起動します ===')
+
+    # プログラム起動時刻（uptime 表示用）
+    program_started_at = datetime.now()
 
     inky_display = initialize_display()
     if inky_display is None:
@@ -482,7 +508,7 @@ def main():
 
     total_in_cycle = current_file_count
 
-    # 表示カウンタの読み込み
+    # 表示カウンタの読み込み（表示はしないが統計として維持）
     display_counter = load_display_counter()
     logger.info(f"表示カウンタ初期値: {display_counter}")
 
@@ -511,12 +537,17 @@ def main():
 
             image_path = display_queue.pop(0)
 
-            # カウンタをインクリメント
+            # カウンタをインクリメント（ログ用途）
             display_counter += 1
+
+            # このスライドを更新する日時
+            slide_updated_at = datetime.now()
 
             processed_image = prepare_image(
                 image_path,
                 inky_display,
+                slide_updated_at,
+                program_started_at,
                 display_counter,
             )
 
@@ -564,3 +595,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
