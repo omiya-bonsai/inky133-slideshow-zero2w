@@ -248,10 +248,7 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
     hh = rem // 3600
     mm = (rem % 3600) // 60
 
-    if days > 0:
-        uptime_str = f"Uptime: {days}d {hh:02d}:{mm:02d}"
-    else:
-        uptime_str = f"Uptime: {hh:02d}:{mm:02d}"
+    uptime_str = f"Uptime: {days}d {hh:02d}:{mm:02d}"
 
     lines = [updated_str, uptime_str]
 
