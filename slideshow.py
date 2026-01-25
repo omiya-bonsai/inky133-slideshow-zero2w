@@ -4,10 +4,10 @@ Pimoroni Inky Impression 13.3" (2025 Edition / 1600x1200) 用 スライドショ
 - 2025年版 Inky ライブラリの複数クラスに対応
 - スライド表示状態の保存（キュー / 全枚数）
 - get_throttled 監視とは別に、表示カウンタ & ハートビートファイルを更新
-- 画像ごとに撮影日 + 経過年月を四隅のどこかにオーバーレイ
-- （変更）ナンバリング表示を削除し、日付オーバーレイの対角線上に
-          「スライド更新日時（秒なし）」と
-          「起動からの経過時間（day対応・秒なし）」を表示
+- 画像ごとに撮影日 + 経過年月 + きょうから何日前を四隅のどこかにオーバーレイ
+- 日付オーバーレイの対角線上に
+  「スライド更新日時（秒なし）」と
+  「起動からの経過時間（day対応・秒なし）」を表示
 """
 
 # ===== 標準ライブラリ =====
@@ -16,7 +16,6 @@ import time
 import random
 import logging
 import json
-import traceback
 from datetime import datetime
 
 # ===== サードパーティ =====
@@ -186,14 +185,27 @@ def extract_capture_date(image_path):
 
 def format_date_and_elapsed_time(capture_date):
     if not capture_date:
-        return "Unknown date", "Unknown date"
+        return "Unknown date", "Unknown date", "Unknown date"
+
+    now = datetime.now()
     formatted_date = capture_date.strftime("%Y-%m-%d")
-    days = (datetime.now() - capture_date).days
+    days = (now - capture_date).days
+
+    # 何年前（概算）
     if days >= 365:
-        return formatted_date, f"{days // 365} years ago"
-    if days >= 30:
-        return formatted_date, f"{days // 30} months ago"
-    return formatted_date, "Within a month"
+        elapsed_text = f"{days // 365} years ago"
+    elif days >= 30:
+        elapsed_text = f"{days // 30} months ago"
+    else:
+        elapsed_text = "Within a month"
+
+    # きょうから何日前（厳密）
+    if days >= 0:
+        days_ago_text = f"{days} days ago (from today)"
+    else:
+        days_ago_text = f"{abs(days)} days from today"
+
+    return formatted_date, elapsed_text, days_ago_text
 
 
 def enhance_image(img):
@@ -208,7 +220,7 @@ def add_date_overlay(img, capture_date):
     except OSError:
         font_small = font_large = ImageFont.load_default()
 
-    date_text, elapsed_text = format_date_and_elapsed_time(capture_date)
+    date_text, elapsed_text, days_ago_text = format_date_and_elapsed_time(capture_date)
     position = random.choice(CONFIG["DATE_POSITIONS"])
 
     margin = CONFIG["MARGIN"]
@@ -216,8 +228,15 @@ def add_date_overlay(img, capture_date):
 
     bbox1 = draw.textbbox((0, 0), date_text, font=font_large)
     bbox2 = draw.textbbox((0, 0), elapsed_text, font=font_small)
-    width = max(bbox1[2], bbox2[2])
-    height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + CONFIG["TEXT_PADDING"]
+    bbox3 = draw.textbbox((0, 0), days_ago_text, font=font_small)
+
+    width = max(bbox1[2], bbox2[2], bbox3[2])
+
+    h1 = bbox1[3] - bbox1[1]
+    h2 = bbox2[3] - bbox2[1]
+    h3 = bbox3[3] - bbox3[1]
+
+    height = h1 + h2 + h3 + CONFIG["TEXT_PADDING"] * 2
 
     x = img.width - width - margin - padding if "right" in position else margin + padding
     y = img.height - height - margin - padding if "bottom" in position else margin + padding
@@ -226,9 +245,12 @@ def add_date_overlay(img, capture_date):
         (x - padding, y - padding, x + width + padding, y + height + padding),
         fill="white",
     )
+
     draw.text((x, y), date_text, fill="black", font=font_large)
-    draw.text((x, y + bbox1[3] - bbox1[1] + CONFIG["TEXT_PADDING"]),
-              elapsed_text, fill="black", font=font_small)
+    y2 = y + h1 + CONFIG["TEXT_PADDING"]
+    draw.text((x, y2), elapsed_text, fill="black", font=font_small)
+    y3 = y2 + h2 + CONFIG["TEXT_PADDING"]
+    draw.text((x, y3), days_ago_text, fill="black", font=font_small)
 
     return img, position
 
@@ -327,4 +349,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
