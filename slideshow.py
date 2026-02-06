@@ -286,7 +286,7 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
 
     bboxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
     width = max(b[2] - b[0] for b in bboxes)
-    height = sum((b[3] - b[1]) for b in bboxes) + CONFIG["TEXT_PADDING"]
+    height = sum((b[3] - b[1]) for b in bboxes) + CONFIG["TEXT_PADDING"] * len(lines)
 
     x = img.width - width - margin - padding if "right" in opposite else margin + padding
     y = img.height - height - margin - padding if "bottom" in opposite else margin + padding
