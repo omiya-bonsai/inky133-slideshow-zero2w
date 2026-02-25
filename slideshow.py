@@ -255,6 +255,28 @@ def add_date_overlay(img, capture_date):
     return img, position
 
 
+def format_uptime_htop(uptime_seconds: int) -> str:
+    """
+    htop の uptime 表記に寄せたフォーマット:
+      - 1日以上: "1 day, 03:12:08" / "2 days, 03:12:08"
+      - 1日未満: "03:12:08"
+    """
+    if uptime_seconds < 0:
+        uptime_seconds = 0
+
+    days = uptime_seconds // 86400
+    rem = uptime_seconds % 86400
+    hh = rem // 3600
+    mm = (rem % 3600) // 60
+    ss = rem % 60
+
+    if days > 0:
+        day_word = "day" if days == 1 else "days"
+        return f"{days} {day_word}, {hh:02d}:{mm:02d}:{ss:02d}"
+    else:
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
 def add_status_overlay(img, date_position, slide_updated_at, program_started_at):
     draw = ImageDraw.Draw(img)
     try:
@@ -265,12 +287,7 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
     updated_str = f"Updated: {slide_updated_at.strftime('%Y-%m-%d %H:%M')}"
 
     uptime_seconds = int((slide_updated_at - program_started_at).total_seconds())
-    days = uptime_seconds // 86400
-    rem = uptime_seconds % 86400
-    hh = rem // 3600
-    mm = (rem % 3600) // 60
-
-    uptime_str = f"Uptime: {days}d {hh:02d}:{mm:02d}"
+    uptime_str = f"Uptime: {format_uptime_htop(uptime_seconds)}"
 
     lines = [updated_str, uptime_str]
 
