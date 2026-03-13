@@ -46,6 +46,7 @@ CONFIG = {
     "MARGIN": 25,
     "BACKGROUND_PADDING": 15,
     "TEXT_PADDING": 12,
+    "LINE_SPACING": 8,
     "CONTRAST": 1.1,
 }
 
@@ -168,6 +169,40 @@ def update_heartbeat():
         pass
 
 
+# ==================== uptime ====================
+
+def get_system_uptime_seconds() -> int:
+    """
+    Linux の /proc/uptime から OS の uptime を取得する。
+    取得できない場合は 0 を返す。
+    """
+    try:
+        with open("/proc/uptime", "r") as f:
+            first = f.read().split()[0]
+        return max(0, int(float(first)))
+    except Exception:
+        return 0
+
+
+def format_uptime_htop(uptime_seconds: int) -> str:
+    """
+    htop の uptime 表記に寄せたフォーマット:
+      - 1日以上: "1 day, 03:12:08" / "20 days, 03:12:08"
+      - 1日未満: "03:12:08"
+    """
+    uptime_seconds = max(0, int(uptime_seconds))
+
+    days, rem = divmod(uptime_seconds, 86400)
+    hh, rem = divmod(rem, 3600)
+    mm, ss = divmod(rem, 60)
+
+    if days > 0:
+        day_word = "day" if days == 1 else "days"
+        return f"{days} {day_word}, {hh:02d}:{mm:02d}:{ss:02d}"
+
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
 # ==================== 画像処理 ====================
 
 def extract_capture_date(image_path):
@@ -191,7 +226,6 @@ def format_date_and_elapsed_time(capture_date):
     formatted_date = capture_date.strftime("%Y-%m-%d")
     days = (now - capture_date).days
 
-    # 何年前（概算）
     if days >= 365:
         elapsed_text = f"{days // 365} years ago"
     elif days >= 30:
@@ -199,7 +233,6 @@ def format_date_and_elapsed_time(capture_date):
     else:
         elapsed_text = "Within a month"
 
-    # きょうから何日前（厳密）
     if days >= 0:
         days_ago_text = f"{days} days ago (from today)"
     else:
@@ -230,7 +263,11 @@ def add_date_overlay(img, capture_date):
     bbox2 = draw.textbbox((0, 0), elapsed_text, font=font_small)
     bbox3 = draw.textbbox((0, 0), days_ago_text, font=font_small)
 
-    width = max(bbox1[2], bbox2[2], bbox3[2])
+    width = max(
+        bbox1[2] - bbox1[0],
+        bbox2[2] - bbox2[0],
+        bbox3[2] - bbox3[0],
+    )
 
     h1 = bbox1[3] - bbox1[1]
     h2 = bbox2[3] - bbox2[1]
@@ -255,29 +292,7 @@ def add_date_overlay(img, capture_date):
     return img, position
 
 
-def format_uptime_htop(uptime_seconds: int) -> str:
-    """
-    htop の uptime 表記に寄せたフォーマット:
-      - 1日以上: "1 day, 03:12:08" / "2 days, 03:12:08"
-      - 1日未満: "03:12:08"
-    """
-    if uptime_seconds < 0:
-        uptime_seconds = 0
-
-    days = uptime_seconds // 86400
-    rem = uptime_seconds % 86400
-    hh = rem // 3600
-    mm = (rem % 3600) // 60
-    ss = rem % 60
-
-    if days > 0:
-        day_word = "day" if days == 1 else "days"
-        return f"{days} {day_word}, {hh:02d}:{mm:02d}:{ss:02d}"
-    else:
-        return f"{hh:02d}:{mm:02d}:{ss:02d}"
-
-
-def add_status_overlay(img, date_position, slide_updated_at, program_started_at):
+def add_status_overlay(img, date_position, slide_updated_at):
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
@@ -285,11 +300,10 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
         font = ImageFont.load_default()
 
     updated_str = f"Updated: {slide_updated_at.strftime('%Y-%m-%d %H:%M')}"
-
-    uptime_seconds = int((slide_updated_at - program_started_at).total_seconds())
+    uptime_seconds = get_system_uptime_seconds()
     uptime_str = f"Uptime: {format_uptime_htop(uptime_seconds)}"
 
-    lines = [updated_str, uptime_str]
+    text_block = f"{updated_str}\n{uptime_str}"
 
     opposite = {
         "bottom-right": "top-left",
@@ -301,9 +315,15 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
     margin = CONFIG["MARGIN"]
     padding = CONFIG["BACKGROUND_PADDING"]
 
-    bboxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
-    width = max(b[2] - b[0] for b in bboxes)
-    height = sum((b[3] - b[1]) for b in bboxes) + CONFIG["TEXT_PADDING"] * len(lines)
+    bbox = draw.multiline_textbbox(
+        (0, 0),
+        text_block,
+        font=font,
+        spacing=CONFIG["LINE_SPACING"],
+    )
+
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
 
     x = img.width - width - margin - padding if "right" in opposite else margin + padding
     y = img.height - height - margin - padding if "bottom" in opposite else margin + padding
@@ -313,27 +333,29 @@ def add_status_overlay(img, date_position, slide_updated_at, program_started_at)
         fill="white",
     )
 
-    yy = y
-    for line, bbox in zip(lines, bboxes):
-        draw.text((x, yy), line, fill="black", font=font)
-        yy += (bbox[3] - bbox[1]) + CONFIG["TEXT_PADDING"]
+    draw.multiline_text(
+        (x, y),
+        text_block,
+        fill="black",
+        font=font,
+        spacing=CONFIG["LINE_SPACING"],
+    )
 
     return img
 
 
-def prepare_image(image_path, inky_display, slide_updated_at, program_started_at, counter):
+def prepare_image(image_path, inky_display, slide_updated_at, counter):
     with Image.open(image_path) as img:
         img = enhance_image(img.convert("RGB"))
         img = img.resize((inky_display.width, inky_display.height), Image.Resampling.LANCZOS)
         img, pos = add_date_overlay(img, extract_capture_date(image_path))
-        img = add_status_overlay(img, pos, slide_updated_at, program_started_at)
+        img = add_status_overlay(img, pos, slide_updated_at)
         return img
 
 
 # ==================== メイン ====================
 
 def main():
-    program_started_at = datetime.now()
     inky = initialize_display()
     global logger
     logger = setup_logging()
@@ -354,7 +376,7 @@ def main():
         counter += 1
         slide_updated_at = datetime.now()
 
-        img = prepare_image(image_path, inky, slide_updated_at, program_started_at, counter)
+        img = prepare_image(image_path, inky, slide_updated_at, counter)
         inky.set_image(img)
         inky.show()
 
