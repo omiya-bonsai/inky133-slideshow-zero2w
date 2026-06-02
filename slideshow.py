@@ -16,6 +16,8 @@ import time
 import random
 import logging
 import json
+import subprocess
+import threading
 from datetime import datetime
 
 # ===== サードパーティ =====
@@ -32,6 +34,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.expanduser("~/.cache/slideshow_state_133.json")
 COUNTER_FILE = os.path.expanduser("~/.logs/slideshow_counter_133.txt")
 HEARTBEAT_PATH = "/tmp/inky_slideshow_heartbeat"
+
+NEXT_IMAGE_EVENT = threading.Event()
+BUTTON_B_PRESSED_AT = None
 
 CONFIG = {
     "PHOTO_DIR": os.path.join(SCRIPT_DIR, os.getenv("PHOTO_DIR", "photos")),
@@ -122,6 +127,60 @@ def create_dummy_display():
             pass
 
     return DummyDisplay()
+
+
+def setup_buttons():
+    """
+    Inky Impression 13.3" buttons:
+      A = GPIO5  : next image
+      B = GPIO6  : short press reboot / long press poweroff
+      C = GPIO25 : unused
+      D = GPIO24 : unused
+    """
+    global BUTTON_B_PRESSED_AT
+
+    try:
+        from gpiozero import Button
+    except Exception as e:
+        logger.warning("gpiozero not available, buttons disabled: %s", e)
+        return []
+
+    btn_a = Button(5, pull_up=True, bounce_time=0.08)
+    btn_b = Button(6, pull_up=True, bounce_time=0.08)
+
+    def on_a_pressed():
+        logger.info("Button A pressed: next image requested")
+        NEXT_IMAGE_EVENT.set()
+
+    def on_b_pressed():
+        global BUTTON_B_PRESSED_AT
+        BUTTON_B_PRESSED_AT = time.monotonic()
+        logger.info("Button B pressed")
+
+    def on_b_released():
+        global BUTTON_B_PRESSED_AT
+
+        if BUTTON_B_PRESSED_AT is None:
+            return
+
+        held = time.monotonic() - BUTTON_B_PRESSED_AT
+        BUTTON_B_PRESSED_AT = None
+
+        if held >= 3.0:
+            logger.warning("Button B long press %.2fs: poweroff", held)
+            subprocess.Popen(["sudo", "/usr/sbin/poweroff"])
+        else:
+            logger.warning("Button B short press %.2fs: reboot", held)
+            subprocess.Popen(["sudo", "/usr/sbin/reboot"])
+
+    btn_a.when_pressed = on_a_pressed
+    btn_b.when_pressed = on_b_pressed
+    btn_b.when_released = on_b_released
+
+    logger.info("Buttons enabled: A=next, B=reboot, long-B=poweroff")
+    return [btn_a, btn_b]
+
+
 
 
 # ==================== 状態・カウンタ ====================
@@ -242,16 +301,18 @@ def format_date_and_elapsed_time(capture_date):
 
 
 def enhance_image(img):
-    img = ImageEnhance.Contrast(img).enhance(1.0)
-    img = ImageEnhance.Color(img).enhance(0.95)
+    # img = ImageEnhance.Contrast(img).enhance(1.0)
+    # img = ImageEnhance.Color(img).enhance(0.95)
 
-    r, g, b = img.split()
+    # r, g, b = img.split()
 
-    r = r.point(lambda x: min(255, int(x * 1.01)))
-    g = g.point(lambda x: min(255, int(x * 0.98)))
-    b = b.point(lambda x: min(255, int(x * 1.03)))
+    # r = r.point(lambda x: min(255, int(x * 1.01)))
+    # g = g.point(lambda x: min(255, int(x * 0.98)))
+    # b = b.point(lambda x: min(255, int(x * 1.03)))
 
-    return Image.merge("RGB", (r, g, b))
+    # return Image.merge("RGB", (r, g, b))
+
+    return img
 
 
 def add_date_overlay(img, capture_date):
@@ -368,6 +429,7 @@ def main():
     inky = initialize_display()
     global logger
     logger = setup_logging()
+    buttons = setup_buttons()
 
     counter = load_display_counter()
     _, queue = load_state()
@@ -392,7 +454,9 @@ def main():
         save_display_counter(counter)
         save_state(queue, len(queue))
         update_heartbeat()
-        time.sleep(CONFIG["INTERVAL_SECONDS"])
+
+        NEXT_IMAGE_EVENT.clear()
+        NEXT_IMAGE_EVENT.wait(CONFIG["INTERVAL_SECONDS"])
 
 
 if __name__ == "__main__":
