@@ -47,7 +47,7 @@ CONFIG = {
     "BACKGROUND_PADDING": 15,
     "TEXT_PADDING": 12,
     "LINE_SPACING": 8,
-    "CONTRAST": 1.1,
+    "CONTRAST": 1.0,
 }
 
 logger = None
@@ -242,7 +242,15 @@ def format_date_and_elapsed_time(capture_date):
 
 
 def enhance_image(img):
-    return ImageEnhance.Contrast(img).enhance(CONFIG["CONTRAST"])
+    img = ImageEnhance.Contrast(img).enhance(CONFIG["CONTRAST"])
+    img = ImageEnhance.Color(img).enhance(0.88)
+    img = ImageEnhance.Brightness(img).enhance(1.04)
+
+    r, g, b = img.split()
+    r = r.point(lambda x: min(255, int(x * 1.04)))
+    b = b.point(lambda x: max(0, int(x * 0.92)))
+
+    return Image.merge("RGB", (r, g, b))
 
 
 def add_date_overlay(img, capture_date):
