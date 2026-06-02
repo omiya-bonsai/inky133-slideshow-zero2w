@@ -242,13 +242,14 @@ def format_date_and_elapsed_time(capture_date):
 
 
 def enhance_image(img):
-    img = ImageEnhance.Contrast(img).enhance(CONFIG["CONTRAST"])
-    img = ImageEnhance.Color(img).enhance(0.88)
-    img = ImageEnhance.Brightness(img).enhance(1.04)
+    img = ImageEnhance.Contrast(img).enhance(1.0)
+    img = ImageEnhance.Color(img).enhance(0.95)
 
     r, g, b = img.split()
-    r = r.point(lambda x: min(255, int(x * 1.04)))
-    b = b.point(lambda x: max(0, int(x * 0.92)))
+
+    r = r.point(lambda x: min(255, int(x * 1.01)))
+    g = g.point(lambda x: min(255, int(x * 0.98)))
+    b = b.point(lambda x: min(255, int(x * 1.03)))
 
     return Image.merge("RGB", (r, g, b))
 
