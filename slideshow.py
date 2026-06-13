@@ -1,13 +1,13 @@
 #!/usr/bin/python3
 """
-Pimoroni Inky Impression 13.3" (2025 Edition / 1600x1200) 用 スライドショープログラム
-- 2025年版 Inky ライブラリの複数クラスに対応
-- スライド表示状態の保存（キュー / 全枚数）
-- get_throttled 監視とは別に、表示カウンタ & ハートビートファイルを更新
-- 画像ごとに撮影日 + 経過年月 + きょうから何日前を四隅のどこかにオーバーレイ
-- 日付オーバーレイの対角線上に
-  「スライド更新日時（秒なし）」と
-  「起動からの経過時間（day対応・秒なし）」を表示
+Pimoroni Inky Impression 13.3" Spectra 6 / 1600x1200 用 スライドショープログラム
+
+画像分類:
+  photos/photo/ 配下 → 写真用処理: Floyd-Steinberg ディザリング
+  photos/art/   配下 → イラスト用処理: ディザリングなし
+
+対応画像:
+  .jpg .jpeg .png
 """
 
 # ===== 標準ライブラリ =====
@@ -25,7 +25,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 import piexif
 from dotenv import load_dotenv
 
-# .env ファイル読み込み
 load_dotenv()
 
 # ==================== 定数・設定 ====================
@@ -47,12 +46,15 @@ CONFIG = {
     "INTERVAL_SECONDS": int(os.getenv("INTERVAL_SECONDS", 1800)),
     "FONT_SIZE": 20,
     "DATE_FONT_SIZE": 24,
-    "DATE_POSITIONS": ['bottom-right', 'top-right', 'top-left', 'bottom-left'],
+    "DATE_POSITIONS": ["bottom-right", "top-right", "top-left", "bottom-left"],
     "MARGIN": 25,
     "BACKGROUND_PADDING": 15,
     "TEXT_PADDING": 12,
     "LINE_SPACING": 8,
     "CONTRAST": 1.0,
+
+    # Spectra 6 前提
+    "OUTPUT_COLORS": 6,
 }
 
 logger = None
@@ -64,14 +66,16 @@ def setup_logging():
     log_dir = os.path.expanduser("~/.logs/slideshow_logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "slideshow_133.log")
+
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(log_file),
             logging.StreamHandler()
         ]
     )
+
     return logging.getLogger(__name__)
 
 
@@ -94,6 +98,7 @@ def initialize_display():
             else:
                 module = __import__(module_name, fromlist=[class_name])
                 InkyClass = getattr(module, class_name)
+
                 try:
                     inky_display = InkyClass(resolution=(1600, 1200))
                 except TypeError:
@@ -181,8 +186,6 @@ def setup_buttons():
     return [btn_a, btn_b]
 
 
-
-
 # ==================== 状態・カウンタ ====================
 
 def save_state(queue, total_count):
@@ -198,7 +201,9 @@ def load_state():
     try:
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
+
         return state.get("total_count", 0), state.get("queue", [])
+
     except Exception:
         return 0, []
 
@@ -231,24 +236,17 @@ def update_heartbeat():
 # ==================== uptime ====================
 
 def get_system_uptime_seconds() -> int:
-    """
-    Linux の /proc/uptime から OS の uptime を取得する。
-    取得できない場合は 0 を返す。
-    """
     try:
         with open("/proc/uptime", "r") as f:
             first = f.read().split()[0]
+
         return max(0, int(float(first)))
+
     except Exception:
         return 0
 
 
 def format_uptime_htop(uptime_seconds: int) -> str:
-    """
-    htop の uptime 表記に寄せたフォーマット:
-      - 1日以上: "1 day, 03:12:08" / "20 days, 03:12:08"
-      - 1日未満: "03:12:08"
-    """
     uptime_seconds = max(0, int(uptime_seconds))
 
     days, rem = divmod(uptime_seconds, 86400)
@@ -262,18 +260,67 @@ def format_uptime_htop(uptime_seconds: int) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
+# ==================== 画像分類 ====================
+
+def detect_image_mode(image_path: str) -> str:
+    """
+    フォルダで画像モードを判定する。
+
+    photos/photo/ 配下 → photo
+    photos/art/   配下 → art
+
+    どちらにも該当しない場合は photo 扱い。
+    """
+    normalized = os.path.normpath(image_path).lower()
+    parts = normalized.split(os.sep)
+
+    if "art" in parts:
+        return "art"
+
+    if "photo" in parts:
+        return "photo"
+
+    return "photo"
+
+
+def collect_images():
+    """
+    PHOTO_DIR 配下を再帰的に探索する。
+    """
+    image_paths = []
+
+    for root, dirs, files in os.walk(CONFIG["PHOTO_DIR"]):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in files:
+            if filename.startswith("."):
+                continue
+
+            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                image_paths.append(os.path.join(root, filename))
+
+    return image_paths
+
+
 # ==================== 画像処理 ====================
 
 def extract_capture_date(image_path):
     if image_path.lower().endswith(".png"):
         return None
+
     try:
         exif_dict = piexif.load(image_path)
         date_str = exif_dict["Exif"].get(piexif.ExifIFD.DateTimeOriginal)
+
         if date_str:
-            return datetime.strptime(date_str.decode("utf-8"), "%Y:%m:%d %H:%M:%S")
+            return datetime.strptime(
+                date_str.decode("utf-8"),
+                "%Y:%m:%d %H:%M:%S"
+            )
+
     except Exception:
         pass
+
     return None
 
 
@@ -300,14 +347,58 @@ def format_date_and_elapsed_time(capture_date):
     return formatted_date, elapsed_text, days_ago_text
 
 
-def enhance_image(img):
-    img = ImageEnhance.Contrast(img).enhance(1.08)
-    img = ImageEnhance.Brightness(img).enhance(0.98)
+def enhance_image(img, image_mode: str):
+    """
+    表示前の軽い補正。
+
+    photo:
+      写真は少しコントラストを上げる。
+    art:
+      イラストはベタ塗りを壊しにくいよう控えめ。
+    """
+    if image_mode == "art":
+        img = ImageEnhance.Contrast(img).enhance(1.03)
+        img = ImageEnhance.Brightness(img).enhance(1.00)
+    else:
+        img = ImageEnhance.Contrast(img).enhance(1.08)
+        img = ImageEnhance.Brightness(img).enhance(0.98)
+
     return img
+
+
+def apply_epaper_quantize(img: Image.Image, image_path: str) -> Image.Image:
+    """
+    Spectra 6向けに減色する。
+
+    photo:
+      Floyd-Steinberg ディザリングあり。
+      階調を残すため。
+
+    art:
+      ディザリングなし。
+      線・ベタ塗り・色面を汚しにくくするため。
+    """
+    image_mode = detect_image_mode(image_path)
+
+    if image_mode == "art":
+        dither = Image.Dither.NONE
+        logger.info("Quantize mode: art / no dither / %s", image_path)
+    else:
+        dither = Image.Dither.FLOYDSTEINBERG
+        logger.info("Quantize mode: photo / Floyd-Steinberg / %s", image_path)
+
+    paletted = img.quantize(
+        colors=CONFIG["OUTPUT_COLORS"],
+        method=Image.Quantize.MEDIANCUT,
+        dither=dither,
+    )
+
+    return paletted.convert("RGB")
 
 
 def add_date_overlay(img, capture_date):
     draw = ImageDraw.Draw(img)
+
     try:
         font_small = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
         font_large = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["DATE_FONT_SIZE"])
@@ -345,8 +436,10 @@ def add_date_overlay(img, capture_date):
     )
 
     draw.text((x, y), date_text, fill="black", font=font_large)
+
     y2 = y + h1 + CONFIG["TEXT_PADDING"]
     draw.text((x, y2), elapsed_text, fill="black", font=font_small)
+
     y3 = y2 + h2 + CONFIG["TEXT_PADDING"]
     draw.text((x, y3), days_ago_text, fill="black", font=font_small)
 
@@ -355,6 +448,7 @@ def add_date_overlay(img, capture_date):
 
 def add_status_overlay(img, date_position, slide_updated_at):
     draw = ImageDraw.Draw(img)
+
     try:
         font = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
     except OSError:
@@ -406,19 +500,31 @@ def add_status_overlay(img, date_position, slide_updated_at):
 
 
 def prepare_image(image_path, inky_display, slide_updated_at, counter):
+    image_mode = detect_image_mode(image_path)
+
     with Image.open(image_path) as img:
-        img = enhance_image(img.convert("RGB"))
-        img = img.resize((inky_display.width, inky_display.height), Image.Resampling.LANCZOS)
+        img = img.convert("RGB")
+        img = enhance_image(img, image_mode)
+
+        img = img.resize(
+            (inky_display.width, inky_display.height),
+            Image.Resampling.LANCZOS
+        )
+
         img, pos = add_date_overlay(img, extract_capture_date(image_path))
         img = add_status_overlay(img, pos, slide_updated_at)
+
+        img = apply_epaper_quantize(img, image_path)
+
         return img
 
 
 # ==================== メイン ====================
 
 def main():
-    inky = initialize_display()
     global logger
+
+    inky = initialize_display()
     logger = setup_logging()
     buttons = setup_buttons()
 
@@ -427,24 +533,45 @@ def main():
 
     while True:
         if not queue:
-            queue = [
-                os.path.join(CONFIG["PHOTO_DIR"], f)
-                for f in os.listdir(CONFIG["PHOTO_DIR"])
-                if f.lower().endswith((".jpg", ".jpeg", ".png"))
-            ]
+            queue = collect_images()
+
+            if not queue:
+                logger.error("No images found in %s", CONFIG["PHOTO_DIR"])
+                time.sleep(60)
+                continue
+
             random.shuffle(queue)
+            logger.info("Image queue created: %d images", len(queue))
 
         image_path = queue.pop(0)
+
+        if not os.path.exists(image_path):
+            logger.warning("Missing image skipped: %s", image_path)
+            save_state(queue, len(queue))
+            continue
+
         counter += 1
         slide_updated_at = datetime.now()
 
-        img = prepare_image(image_path, inky, slide_updated_at, counter)
-        inky.set_image(img)
-        inky.show()
+        try:
+            logger.info(
+                "Displaying #%d: %s / mode=%s",
+                counter,
+                image_path,
+                detect_image_mode(image_path),
+            )
 
-        save_display_counter(counter)
-        save_state(queue, len(queue))
-        update_heartbeat()
+            img = prepare_image(image_path, inky, slide_updated_at, counter)
+
+            inky.set_image(img)
+            inky.show()
+
+            save_display_counter(counter)
+            save_state(queue, len(queue))
+            update_heartbeat()
+
+        except Exception as e:
+            logger.exception("Failed to display image: %s / %s", image_path, e)
 
         NEXT_IMAGE_EVENT.clear()
         NEXT_IMAGE_EVENT.wait(CONFIG["INTERVAL_SECONDS"])
