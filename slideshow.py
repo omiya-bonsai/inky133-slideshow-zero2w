@@ -1,64 +1,110 @@
 #!/usr/bin/python3
 """
-Pimoroni Inky Impression 13.3" Spectra 6 / 1600x1200 用 スライドショー
+Pimoroni Inky Impression 13.3" Spectra 6 / 1600x1200
+v1.1 preprocessing pipeline 対応スライドショー
 
-重要:
-- Pillow側での強制6色減色はしない
-- Inkyライブラリ側の色変換に任せる
-- photos/photo/ と photos/art/ を再帰的に読む
+設計:
+- Mac側で完成済みの P-mode PNG を表示する
+- photo / illustration の判定や画像補正はPi側では行わない
+- 撮影日は photos/metadata.json から取得
+- 画像はランダム順
+- Mac側で作った6色/モノクロのP-modeを維持
+- Pi側では日付・更新時刻・uptimeだけをオーバーレイ
 """
 
-import os
-import time
-import random
-import logging
 import json
+import logging
+import os
+import random
 import subprocess
 import threading
+import time
 from datetime import datetime
+from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
-import piexif
+from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.expanduser("~/.cache/slideshow_state_133.json")
-COUNTER_FILE = os.path.expanduser("~/.logs/slideshow_counter_133.txt")
-HEARTBEAT_PATH = "/tmp/inky_slideshow_heartbeat"
+
+# ============================================================
+# Paths / state
+# ============================================================
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+IMAGE_DIR = Path(
+    os.getenv(
+        "PHOTO_DIR",
+        str(SCRIPT_DIR / "photos" / "auto"),
+    )
+)
+
+METADATA_FILE = Path(
+    os.getenv(
+        "METADATA_FILE",
+        str(SCRIPT_DIR / "photos" / "metadata.json"),
+    )
+)
+
+STATE_FILE = Path.home() / ".cache" / "slideshow_state_133.json"
+COUNTER_FILE = Path.home() / ".logs" / "slideshow_counter_133.txt"
+HEARTBEAT_PATH = Path("/tmp/inky_slideshow_heartbeat")
+
+
+# ============================================================
+# Runtime state
+# ============================================================
 
 NEXT_IMAGE_EVENT = threading.Event()
 BUTTON_B_PRESSED_AT = None
 
+
+# ============================================================
+# Configuration
+# ============================================================
+
 CONFIG = {
-    "PHOTO_DIR": os.path.join(SCRIPT_DIR, os.getenv("PHOTO_DIR", "photos")),
     "FONT_PATH": os.getenv(
         "FONT_PATH",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     ),
-    "INTERVAL_SECONDS": int(os.getenv("INTERVAL_SECONDS", 1800)),
+
+    "INTERVAL_SECONDS": int(
+        os.getenv("INTERVAL_SECONDS", "1800")
+    ),
+
     "FONT_SIZE": 20,
     "DATE_FONT_SIZE": 24,
-    "DATE_POSITIONS": ["bottom-right", "top-right", "top-left", "bottom-left"],
+
+    "DATE_POSITIONS": [
+        "bottom-right",
+        "top-right",
+        "top-left",
+        "bottom-left",
+    ],
+
     "MARGIN": 25,
     "BACKGROUND_PADDING": 15,
     "TEXT_PADDING": 12,
     "LINE_SPACING": 8,
-
-    "PHOTO_CONTRAST": 1.08,
-    "PHOTO_BRIGHTNESS": 0.98,
-    "ART_CONTRAST": 1.03,
-    "ART_BRIGHTNESS": 1.00,
 }
+
 
 logger = None
 
 
+# ============================================================
+# Logging
+# ============================================================
+
 def setup_logging():
-    log_dir = os.path.expanduser("~/.logs/slideshow_logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "slideshow_133.log")
+    log_dir = Path.home() / ".logs" / "slideshow_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = log_dir / "slideshow_133.log"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -72,78 +118,79 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 
+# ============================================================
+# Inky
+# ============================================================
+
 def initialize_display():
-    possible_classes = [
-        ("inky", "Inky"),
-        ("inky.inky_impression", "InkyImpression"),
-        ("inky.inky_el133uf1", "InkyEL133UF1"),
-        ("inky.inky_impression", "InkyImpression133"),
-        ("inky.auto", "auto"),
-    ]
+    """
+    13.3" Spectra 6 を自動検出する。
 
-    for module_name, class_name in possible_classes:
-        try:
-            if class_name == "auto":
-                from inky.auto import auto
-                inky_display = auto()
-            else:
-                module = __import__(module_name, fromlist=[class_name])
-                InkyClass = getattr(module, class_name)
+    Dummy displayへ黙ってフォールバックしない。
+    ハードウェア初期化に失敗した場合は、その場で異常終了させる。
+    """
+    from inky.auto import auto
 
-                try:
-                    inky_display = InkyClass(resolution=(1600, 1200))
-                except TypeError:
-                    inky_display = InkyClass()
+    inky = auto(verbose=True)
 
-            if hasattr(inky_display, "set_border"):
-                inky_display.set_border(inky_display.WHITE)
+    logger.info(
+        "Detected display: %s / %dx%d",
+        type(inky).__name__,
+        inky.width,
+        inky.height,
+    )
 
-            return inky_display
+    if (inky.width, inky.height) != (1600, 1200):
+        raise RuntimeError(
+            f"Unexpected display resolution: "
+            f"{inky.width}x{inky.height}"
+        )
 
-        except Exception:
-            continue
+    if hasattr(inky, "set_border"):
+        inky.set_border(inky.WHITE)
 
-    return create_dummy_display()
+    return inky
 
 
-def create_dummy_display():
-    class DummyDisplay:
-        def __init__(self):
-            self.width = 1600
-            self.height = 1200
-            self.WHITE = (255, 255, 255)
-
-        def set_border(self, color):
-            pass
-
-        def set_image(self, image):
-            pass
-
-        def show(self):
-            pass
-
-    return DummyDisplay()
-
+# ============================================================
+# Buttons
+# ============================================================
 
 def setup_buttons():
     global BUTTON_B_PRESSED_AT
 
     try:
         from gpiozero import Button
-    except Exception as e:
-        logger.warning("gpiozero not available, buttons disabled: %s", e)
+    except Exception as exc:
+        logger.warning(
+            "gpiozero not available, buttons disabled: %s",
+            exc,
+        )
         return []
 
-    btn_a = Button(5, pull_up=True, bounce_time=0.08)
-    btn_b = Button(6, pull_up=True, bounce_time=0.08)
+    btn_a = Button(
+        5,
+        pull_up=True,
+        bounce_time=0.08,
+    )
+
+    btn_b = Button(
+        6,
+        pull_up=True,
+        bounce_time=0.08,
+    )
 
     def on_a_pressed():
-        logger.info("Button A pressed: next image requested")
+        logger.info(
+            "Button A pressed: next image requested"
+        )
         NEXT_IMAGE_EVENT.set()
 
     def on_b_pressed():
         global BUTTON_B_PRESSED_AT
+
         BUTTON_B_PRESSED_AT = time.monotonic()
+
         logger.info("Button B pressed")
 
     def on_b_released():
@@ -152,187 +199,567 @@ def setup_buttons():
         if BUTTON_B_PRESSED_AT is None:
             return
 
-        held = time.monotonic() - BUTTON_B_PRESSED_AT
+        held = (
+            time.monotonic()
+            - BUTTON_B_PRESSED_AT
+        )
+
         BUTTON_B_PRESSED_AT = None
 
         if held >= 3.0:
-            logger.warning("Button B long press %.2fs: poweroff", held)
-            subprocess.Popen(["sudo", "/usr/sbin/poweroff"])
+            logger.warning(
+                "Button B long press %.2fs: poweroff",
+                held,
+            )
+
+            subprocess.Popen(
+                ["sudo", "/usr/sbin/poweroff"]
+            )
+
         else:
-            logger.warning("Button B short press %.2fs: reboot", held)
-            subprocess.Popen(["sudo", "/usr/sbin/reboot"])
+            logger.warning(
+                "Button B short press %.2fs: reboot",
+                held,
+            )
+
+            subprocess.Popen(
+                ["sudo", "/usr/sbin/reboot"]
+            )
 
     btn_a.when_pressed = on_a_pressed
     btn_b.when_pressed = on_b_pressed
     btn_b.when_released = on_b_released
 
-    logger.info("Buttons enabled: A=next, B=reboot, long-B=poweroff")
+    logger.info(
+        "Buttons enabled: "
+        "A=next, B=reboot, long-B=poweroff"
+    )
+
     return [btn_a, btn_b]
 
 
-def save_state(queue, total_count):
+# ============================================================
+# Metadata
+# ============================================================
+
+def load_metadata():
+    if not METADATA_FILE.exists():
+        logger.warning(
+            "Metadata file not found: %s",
+            METADATA_FILE,
+        )
+        return {}
+
     try:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE, "w") as f:
-            json.dump({"total_count": total_count, "queue": queue}, f)
+        with METADATA_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as f:
+            data = json.load(f)
+
+        logger.info(
+            "Metadata loaded: %d entries",
+            len(data),
+        )
+
+        return data
+
     except Exception:
-        pass
+        logger.exception(
+            "Failed to load metadata: %s",
+            METADATA_FILE,
+        )
+        return {}
 
 
-def load_state():
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-        return state.get("total_count", 0), state.get("queue", [])
-    except Exception:
-        return 0, []
+def parse_capture_date(value):
+    """
+    Mac側metadataに保存される各種日時表記を受け入れる。
 
-
-def load_display_counter():
-    try:
-        with open(COUNTER_FILE, "r") as f:
-            return int(f.read().strip())
-    except Exception:
-        return 0
-
-
-def save_display_counter(counter: int):
-    try:
-        os.makedirs(os.path.dirname(COUNTER_FILE), exist_ok=True)
-        with open(COUNTER_FILE, "w") as f:
-            f.write(str(counter))
-    except Exception:
-        pass
-
-
-def update_heartbeat():
-    try:
-        with open(HEARTBEAT_PATH, "w") as f:
-            f.write(datetime.now().isoformat(timespec="minutes"))
-    except Exception:
-        pass
-
-
-def get_system_uptime_seconds() -> int:
-    try:
-        with open("/proc/uptime", "r") as f:
-            first = f.read().split()[0]
-        return max(0, int(float(first)))
-    except Exception:
-        return 0
-
-
-def format_uptime_htop(uptime_seconds: int) -> str:
-    uptime_seconds = max(0, int(uptime_seconds))
-    days, rem = divmod(uptime_seconds, 86400)
-    hh, rem = divmod(rem, 3600)
-    mm, ss = divmod(rem, 60)
-
-    if days > 0:
-        return f"{days} {'day' if days == 1 else 'days'}, {hh:02d}:{mm:02d}:{ss:02d}"
-
-    return f"{hh:02d}:{mm:02d}:{ss:02d}"
-
-
-def detect_image_mode(image_path: str) -> str:
-    parts = os.path.normpath(image_path).lower().split(os.sep)
-
-    if "art" in parts:
-        return "art"
-
-    if "photo" in parts:
-        return "photo"
-
-    return "photo"
-
-
-def collect_images():
-    image_paths = []
-
-    for root, dirs, files in os.walk(CONFIG["PHOTO_DIR"]):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-
-        for filename in files:
-            if filename.startswith("."):
-                continue
-
-            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                image_paths.append(os.path.join(root, filename))
-
-    return image_paths
-
-
-def extract_capture_date(image_path):
-    if image_path.lower().endswith(".png"):
+    例:
+      2019:04:10 12:48:04
+      2019-04-10 12:48:04
+      2019-04-10T12:48:04
+    """
+    if not value:
         return None
 
-    try:
-        exif_dict = piexif.load(image_path)
-        date_str = exif_dict["Exif"].get(piexif.ExifIFD.DateTimeOriginal)
+    value = str(value).strip()
 
-        if date_str:
+    # ExifToolのtimezone付きFileModifyDateへの保険
+    if len(value) >= 19:
+        candidate = value[:19]
+    else:
+        candidate = value
+
+    formats = (
+        "%Y:%m:%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    )
+
+    for fmt in formats:
+        try:
             return datetime.strptime(
-                date_str.decode("utf-8"),
-                "%Y:%m:%d %H:%M:%S",
+                candidate,
+                fmt,
             )
-    except Exception:
-        pass
+        except ValueError:
+            pass
 
     return None
 
 
-def format_date_and_elapsed_time(capture_date):
+def get_metadata_entry(image_path, metadata):
+    """
+    v1.1では基本的にoutput filenameがmetadata key。
+
+    将来metadata構造を少し変えても動くよう、
+    source/output関連キーもフォールバック検索する。
+    """
+    filename = Path(image_path).name
+
+    if filename in metadata:
+        return metadata[filename]
+
+    for key, entry in metadata.items():
+        if not isinstance(entry, dict):
+            continue
+
+        possible_names = {
+            Path(str(key)).name,
+        }
+
+        for field in (
+            "output",
+            "output_name",
+            "filename",
+        ):
+            value = entry.get(field)
+
+            if value:
+                possible_names.add(
+                    Path(str(value)).name
+                )
+
+        if filename in possible_names:
+            return entry
+
+    return None
+
+
+def get_capture_date(
+    image_path,
+    metadata,
+):
+    entry = get_metadata_entry(
+        image_path,
+        metadata,
+    )
+
+    if not entry:
+        logger.warning(
+            "Metadata entry not found: %s",
+            Path(image_path).name,
+        )
+        return None
+
+    return parse_capture_date(
+        entry.get("capture_date")
+    )
+
+
+def get_display_mode(
+    image_path,
+    metadata,
+):
+    """
+    ログ表示用。
+
+    画像表示処理そのものには使わない。
+    """
+    entry = get_metadata_entry(
+        image_path,
+        metadata,
+    )
+
+    if not entry:
+        return "unknown"
+
+    return (
+        entry.get("display_mode")
+        or entry.get("mode")
+        or entry.get(
+            "classification",
+            {},
+        ).get("display_mode")
+        or "unknown"
+    )
+
+
+# ============================================================
+# State
+# ============================================================
+
+def save_state(queue, total_count):
+    try:
+        STATE_FILE.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        with STATE_FILE.open(
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(
+                {
+                    "total_count": total_count,
+                    "queue": queue,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    except Exception:
+        logger.exception(
+            "Failed to save state"
+        )
+
+
+def load_state():
+    try:
+        with STATE_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as f:
+            state = json.load(f)
+
+        return (
+            state.get("total_count", 0),
+            state.get("queue", []),
+        )
+
+    except Exception:
+        return 0, []
+
+
+def reset_state():
+    try:
+        STATE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+# ============================================================
+# Display counter
+# ============================================================
+
+def load_display_counter():
+    try:
+        return int(
+            COUNTER_FILE.read_text().strip()
+        )
+    except Exception:
+        return 0
+
+
+def save_display_counter(counter):
+    try:
+        COUNTER_FILE.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        COUNTER_FILE.write_text(
+            str(counter)
+        )
+
+    except Exception:
+        logger.exception(
+            "Failed to save display counter"
+        )
+
+
+# ============================================================
+# Heartbeat
+# ============================================================
+
+def update_heartbeat():
+    try:
+        HEARTBEAT_PATH.write_text(
+            datetime.now().isoformat(
+                timespec="minutes"
+            )
+        )
+
+    except Exception:
+        logger.exception(
+            "Failed to update heartbeat"
+        )
+
+
+# ============================================================
+# uptime
+# ============================================================
+
+def get_system_uptime_seconds():
+    try:
+        with open(
+            "/proc/uptime",
+            "r",
+            encoding="utf-8",
+        ) as f:
+            first = f.read().split()[0]
+
+        return max(
+            0,
+            int(float(first)),
+        )
+
+    except Exception:
+        return 0
+
+
+def format_uptime_htop(uptime_seconds):
+    uptime_seconds = max(
+        0,
+        int(uptime_seconds),
+    )
+
+    days, rem = divmod(
+        uptime_seconds,
+        86400,
+    )
+
+    hh, rem = divmod(
+        rem,
+        3600,
+    )
+
+    mm, ss = divmod(
+        rem,
+        60,
+    )
+
+    if days > 0:
+        return (
+            f"{days} "
+            f"{'day' if days == 1 else 'days'}, "
+            f"{hh:02d}:{mm:02d}:{ss:02d}"
+        )
+
+    return (
+        f"{hh:02d}:"
+        f"{mm:02d}:"
+        f"{ss:02d}"
+    )
+
+
+# ============================================================
+# Image collection
+# ============================================================
+
+def collect_images():
+    if not IMAGE_DIR.exists():
+        return []
+
+    images = []
+
+    for path in IMAGE_DIR.rglob("*.png"):
+        if not path.is_file():
+            continue
+
+        if path.name.startswith("."):
+            continue
+
+        images.append(
+            str(path.resolve())
+        )
+
+    return sorted(images)
+
+
+def reconcile_queue(
+    queue,
+    current_images,
+):
+    """
+    古いphotos/パスがstateに残っていても安全に捨てる。
+
+    入力画像が増減した場合は、新しいシャッフルキューを作る。
+    """
+    current_set = set(current_images)
+
+    valid_queue = [
+        path
+        for path in queue
+        if path in current_set
+        and os.path.exists(path)
+    ]
+
+    if (
+        len(current_images)
+        != len(valid_queue)
+        and not valid_queue
+    ):
+        return []
+
+    return valid_queue
+
+
+# ============================================================
+# Date text
+# ============================================================
+
+def format_date_and_elapsed_time(
+    capture_date,
+):
     if not capture_date:
-        return "Unknown date", "Unknown date", "Unknown date"
+        return (
+            "Unknown date",
+            "Unknown date",
+            "Unknown date",
+        )
 
     now = datetime.now()
-    formatted_date = capture_date.strftime("%Y-%m-%d")
-    days = (now - capture_date).days
+
+    formatted_date = (
+        capture_date.strftime(
+            "%Y-%m-%d"
+        )
+    )
+
+    days = (
+        now - capture_date
+    ).days
 
     if days >= 365:
-        elapsed_text = f"{days // 365} years ago"
+        years = days // 365
+        elapsed_text = (
+            f"{years} "
+            f"{'year' if years == 1 else 'years'} "
+            f"ago"
+        )
+
     elif days >= 30:
-        elapsed_text = f"{days // 30} months ago"
+        months = days // 30
+        elapsed_text = (
+            f"{months} "
+            f"{'month' if months == 1 else 'months'} "
+            f"ago"
+        )
+
     else:
-        elapsed_text = "Within a month"
+        elapsed_text = (
+            "Within a month"
+        )
 
     if days >= 0:
-        days_ago_text = f"{days} days ago (from today)"
+        days_ago_text = (
+            f"{days} days ago "
+            f"(from today)"
+        )
+
     else:
-        days_ago_text = f"{abs(days)} days from today"
+        days_ago_text = (
+            f"{abs(days)} days "
+            f"from today"
+        )
 
-    return formatted_date, elapsed_text, days_ago_text
-
-
-def enhance_image(img, image_mode: str):
-    if image_mode == "art":
-        img = ImageEnhance.Contrast(img).enhance(CONFIG["ART_CONTRAST"])
-        img = ImageEnhance.Brightness(img).enhance(CONFIG["ART_BRIGHTNESS"])
-    else:
-        img = ImageEnhance.Contrast(img).enhance(CONFIG["PHOTO_CONTRAST"])
-        img = ImageEnhance.Brightness(img).enhance(CONFIG["PHOTO_BRIGHTNESS"])
-
-    return img
+    return (
+        formatted_date,
+        elapsed_text,
+        days_ago_text,
+    )
 
 
-def add_date_overlay(img, capture_date):
+# ============================================================
+# Fonts
+# ============================================================
+
+def load_font(size):
+    try:
+        return ImageFont.truetype(
+            CONFIG["FONT_PATH"],
+            size,
+        )
+    except OSError:
+        logger.warning(
+            "Font unavailable: %s",
+            CONFIG["FONT_PATH"],
+        )
+
+        return ImageFont.load_default()
+
+
+# ============================================================
+# Overlays
+# ============================================================
+
+def add_date_overlay(
+    img,
+    capture_date,
+):
+    """
+    P-modeのまま描画する。
+
+    Inky palette:
+      index 0 = BLACK
+      index 1 = WHITE
+
+    RGBへ変換しないことが重要。
+    """
+    if img.mode != "P":
+        raise ValueError(
+            f"Expected P-mode image, got {img.mode}"
+        )
+
     draw = ImageDraw.Draw(img)
 
-    try:
-        font_small = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
-        font_large = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["DATE_FONT_SIZE"])
-    except OSError:
-        font_small = font_large = ImageFont.load_default()
+    font_small = load_font(
+        CONFIG["FONT_SIZE"]
+    )
 
-    date_text, elapsed_text, days_ago_text = format_date_and_elapsed_time(capture_date)
-    position = random.choice(CONFIG["DATE_POSITIONS"])
+    font_large = load_font(
+        CONFIG["DATE_FONT_SIZE"]
+    )
+
+    (
+        date_text,
+        elapsed_text,
+        days_ago_text,
+    ) = format_date_and_elapsed_time(
+        capture_date
+    )
+
+    position = random.choice(
+        CONFIG["DATE_POSITIONS"]
+    )
 
     margin = CONFIG["MARGIN"]
-    padding = CONFIG["BACKGROUND_PADDING"]
+    padding = CONFIG[
+        "BACKGROUND_PADDING"
+    ]
 
-    bbox1 = draw.textbbox((0, 0), date_text, font=font_large)
-    bbox2 = draw.textbbox((0, 0), elapsed_text, font=font_small)
-    bbox3 = draw.textbbox((0, 0), days_ago_text, font=font_small)
+    bbox1 = draw.textbbox(
+        (0, 0),
+        date_text,
+        font=font_large,
+    )
+
+    bbox2 = draw.textbbox(
+        (0, 0),
+        elapsed_text,
+        font=font_small,
+    )
+
+    bbox3 = draw.textbbox(
+        (0, 0),
+        days_ago_text,
+        font=font_small,
+    )
 
     width = max(
         bbox1[2] - bbox1[0],
@@ -344,150 +771,418 @@ def add_date_overlay(img, capture_date):
     h2 = bbox2[3] - bbox2[1]
     h3 = bbox3[3] - bbox3[1]
 
-    height = h1 + h2 + h3 + CONFIG["TEXT_PADDING"] * 2
-
-    x = img.width - width - margin - padding if "right" in position else margin + padding
-    y = img.height - height - margin - padding if "bottom" in position else margin + padding
-
-    draw.rectangle(
-        (x - padding, y - padding, x + width + padding, y + height + padding),
-        fill="white",
+    height = (
+        h1
+        + h2
+        + h3
+        + CONFIG["TEXT_PADDING"] * 2
     )
 
-    draw.text((x, y), date_text, fill="black", font=font_large)
+    if "right" in position:
+        x = (
+            img.width
+            - width
+            - margin
+            - padding
+        )
+    else:
+        x = margin + padding
 
-    y2 = y + h1 + CONFIG["TEXT_PADDING"]
-    draw.text((x, y2), elapsed_text, fill="black", font=font_small)
+    if "bottom" in position:
+        y = (
+            img.height
+            - height
+            - margin
+            - padding
+        )
+    else:
+        y = margin + padding
 
-    y3 = y2 + h2 + CONFIG["TEXT_PADDING"]
-    draw.text((x, y3), days_ago_text, fill="black", font=font_small)
+    # 1 = white
+    draw.rectangle(
+        (
+            x - padding,
+            y - padding,
+            x + width + padding,
+            y + height + padding,
+        ),
+        fill=1,
+    )
+
+    # 0 = black
+    draw.text(
+        (x, y),
+        date_text,
+        fill=0,
+        font=font_large,
+    )
+
+    y2 = (
+        y
+        + h1
+        + CONFIG["TEXT_PADDING"]
+    )
+
+    draw.text(
+        (x, y2),
+        elapsed_text,
+        fill=0,
+        font=font_small,
+    )
+
+    y3 = (
+        y2
+        + h2
+        + CONFIG["TEXT_PADDING"]
+    )
+
+    draw.text(
+        (x, y3),
+        days_ago_text,
+        fill=0,
+        font=font_small,
+    )
 
     return img, position
 
 
-def add_status_overlay(img, date_position, slide_updated_at):
+def add_status_overlay(
+    img,
+    date_position,
+    slide_updated_at,
+):
+    if img.mode != "P":
+        raise ValueError(
+            f"Expected P-mode image, got {img.mode}"
+        )
+
     draw = ImageDraw.Draw(img)
 
-    try:
-        font = ImageFont.truetype(CONFIG["FONT_PATH"], CONFIG["FONT_SIZE"])
-    except OSError:
-        font = ImageFont.load_default()
+    font = load_font(
+        CONFIG["FONT_SIZE"]
+    )
 
-    updated_str = f"Updated: {slide_updated_at.strftime('%Y-%m-%d %H:%M')}"
-    uptime_str = f"Uptime: {format_uptime_htop(get_system_uptime_seconds())}"
-    text_block = f"{updated_str}\n{uptime_str}"
+    updated_str = (
+        "Updated: "
+        f"{slide_updated_at.strftime('%Y-%m-%d %H:%M')}"
+    )
+
+    uptime_str = (
+        "Uptime: "
+        f"{format_uptime_htop(get_system_uptime_seconds())}"
+    )
+
+    text_block = (
+        f"{updated_str}\n"
+        f"{uptime_str}"
+    )
 
     opposite = {
         "bottom-right": "top-left",
         "top-right": "bottom-left",
         "top-left": "bottom-right",
         "bottom-left": "top-right",
-    }.get(date_position, "bottom-left")
+    }.get(
+        date_position,
+        "bottom-left",
+    )
 
     margin = CONFIG["MARGIN"]
-    padding = CONFIG["BACKGROUND_PADDING"]
+    padding = CONFIG[
+        "BACKGROUND_PADDING"
+    ]
 
     bbox = draw.multiline_textbbox(
         (0, 0),
         text_block,
         font=font,
-        spacing=CONFIG["LINE_SPACING"],
+        spacing=CONFIG[
+            "LINE_SPACING"
+        ],
     )
 
-    width = bbox[2] - bbox[0]
-    height = bbox[3] - bbox[1]
+    width = (
+        bbox[2] - bbox[0]
+    )
 
-    x = img.width - width - margin - padding if "right" in opposite else margin + padding
-    y = img.height - height - margin - padding if "bottom" in opposite else margin + padding
+    height = (
+        bbox[3] - bbox[1]
+    )
+
+    if "right" in opposite:
+        x = (
+            img.width
+            - width
+            - margin
+            - padding
+        )
+    else:
+        x = (
+            margin
+            + padding
+        )
+
+    if "bottom" in opposite:
+        y = (
+            img.height
+            - height
+            - margin
+            - padding
+        )
+    else:
+        y = (
+            margin
+            + padding
+        )
 
     draw.rectangle(
-        (x - padding, y - padding, x + width + padding, y + height + padding),
-        fill="white",
+        (
+            x - padding,
+            y - padding,
+            x + width + padding,
+            y + height + padding,
+        ),
+        fill=1,
     )
 
     draw.multiline_text(
         (x, y),
         text_block,
-        fill="black",
+        fill=0,
         font=font,
-        spacing=CONFIG["LINE_SPACING"],
+        spacing=CONFIG[
+            "LINE_SPACING"
+        ],
     )
 
     return img
 
 
-def prepare_image(image_path, inky_display, slide_updated_at, counter):
-    image_mode = detect_image_mode(image_path)
+# ============================================================
+# Prepare final display image
+# ============================================================
 
-    with Image.open(image_path) as img:
-        img = img.convert("RGB")
-        img = enhance_image(img, image_mode)
+def prepare_image(
+    image_path,
+    inky_display,
+    slide_updated_at,
+    metadata,
+):
+    with Image.open(image_path) as source:
+        if source.mode != "P":
+            raise ValueError(
+                f"Generated image must be P-mode: "
+                f"{image_path} / mode={source.mode}"
+            )
 
-        img = img.resize(
-            (inky_display.width, inky_display.height),
-            Image.Resampling.LANCZOS,
+        if source.size != (
+            inky_display.width,
+            inky_display.height,
+        ):
+            raise ValueError(
+                f"Unexpected image size: "
+                f"{image_path} / "
+                f"{source.size}"
+            )
+
+        # load()してからcopy()することで
+        # withブロック外でも安全な独立画像にする。
+        source.load()
+        img = source.copy()
+
+    if img.palette is None:
+        raise ValueError(
+            f"Missing palette: {image_path}"
         )
 
-        img, pos = add_date_overlay(img, extract_capture_date(image_path))
-        img = add_status_overlay(img, pos, slide_updated_at)
+    capture_date = get_capture_date(
+        image_path,
+        metadata,
+    )
 
-        return img.convert("RGB")
+    img, date_position = add_date_overlay(
+        img,
+        capture_date,
+    )
 
+    img = add_status_overlay(
+        img,
+        date_position,
+        slide_updated_at,
+    )
+
+    return img
+
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
     global logger
 
-    inky = initialize_display()
     logger = setup_logging()
+
+    logger.info(
+        "=== Inky 13.3 slideshow starting ==="
+    )
+
+    logger.info(
+        "Image directory: %s",
+        IMAGE_DIR,
+    )
+
+    logger.info(
+        "Metadata file: %s",
+        METADATA_FILE,
+    )
+
+    metadata = load_metadata()
+
+    inky = initialize_display()
     buttons = setup_buttons()
 
+    # buttonsをローカル変数として保持し、
+    # gpiozero ButtonがGCされないようにする。
+    _buttons = buttons
+
     counter = load_display_counter()
-    _, queue = load_state()
+
+    saved_count, queue = load_state()
+
+    current_images = collect_images()
+
+    if not current_images:
+        raise RuntimeError(
+            f"No PNG images found: {IMAGE_DIR}"
+        )
+
+    if saved_count != len(
+        current_images
+    ):
+        logger.info(
+            "Image count changed: "
+            "%d -> %d; resetting queue",
+            saved_count,
+            len(current_images),
+        )
+        queue = []
+
+    else:
+        queue = reconcile_queue(
+            queue,
+            current_images,
+        )
 
     while True:
         if not queue:
-            queue = collect_images()
+            current_images = collect_images()
 
-            if not queue:
-                logger.error("No images found in %s", CONFIG["PHOTO_DIR"])
+            if not current_images:
+                logger.error(
+                    "No PNG images found: %s",
+                    IMAGE_DIR,
+                )
+
                 time.sleep(60)
                 continue
 
+            queue = current_images.copy()
+
             random.shuffle(queue)
-            logger.info("Image queue created: %d images", len(queue))
+
+            logger.info(
+                "Image queue created: %d images",
+                len(queue),
+            )
 
         image_path = queue.pop(0)
 
-        if not os.path.exists(image_path):
-            logger.warning("Missing image skipped: %s", image_path)
-            save_state(queue, len(queue))
+        if not os.path.exists(
+            image_path
+        ):
+            logger.warning(
+                "Missing image skipped: %s",
+                image_path,
+            )
+
+            save_state(
+                queue,
+                len(current_images),
+            )
+
             continue
 
         counter += 1
-        slide_updated_at = datetime.now()
+
+        slide_updated_at = (
+            datetime.now()
+        )
 
         try:
+            mode = get_display_mode(
+                image_path,
+                metadata,
+            )
+
             logger.info(
                 "Displaying #%d: %s / mode=%s",
                 counter,
                 image_path,
-                detect_image_mode(image_path),
+                mode,
             )
 
-            img = prepare_image(image_path, inky, slide_updated_at, counter)
+            img = prepare_image(
+                image_path,
+                inky,
+                slide_updated_at,
+                metadata,
+            )
 
+            logger.info(
+                "Prepared: mode=%s / size=%s / "
+                "palette_colours=%d",
+                img.mode,
+                img.size,
+                len(img.palette.colors)
+                if img.palette
+                else 0,
+            )
+
+            # ここでRGBへ変換しない。
+            # Macで生成したP-mode PNGをそのまま渡す。
             inky.set_image(img)
             inky.show()
 
-            save_display_counter(counter)
-            save_state(queue, len(queue))
+            save_display_counter(
+                counter
+            )
+
+            save_state(
+                queue,
+                len(current_images),
+            )
+
             update_heartbeat()
 
-        except Exception as e:
-            logger.exception("Failed to display image: %s / %s", image_path, e)
+            logger.info(
+                "Display completed: #%d",
+                counter,
+            )
+
+        except Exception:
+            logger.exception(
+                "Failed to display image: %s",
+                image_path,
+            )
 
         NEXT_IMAGE_EVENT.clear()
-        NEXT_IMAGE_EVENT.wait(CONFIG["INTERVAL_SECONDS"])
+
+        NEXT_IMAGE_EVENT.wait(
+            CONFIG[
+                "INTERVAL_SECONDS"
+            ]
+        )
 
 
 if __name__ == "__main__":
