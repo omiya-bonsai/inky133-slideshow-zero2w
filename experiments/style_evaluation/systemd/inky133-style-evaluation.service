@@ -1,0 +1,20 @@
+[Unit]
+Description=Inky133 Style Evaluation Mode
+Wants=network-online.target
+After=network-online.target inky-slideshow.service
+Conflicts=inky-slideshow.service
+
+[Service]
+Type=simple
+User=bonsai
+WorkingDirectory=/home/bonsai/inky133-slideshow
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test ! -e /home/bonsai/inky133-slideshow/experiments/style-evaluation
+ExecStartPre=/usr/bin/test -f /home/bonsai/inky133-slideshow/photos/style-evaluation-metadata.json
+ExecStart=/home/bonsai/.virtualenvs/pimoroni/bin/python3 /home/bonsai/inky133-slideshow/experiments/style_evaluation/pi/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Inky133 Apple Framework Enhancement Experiment
+After=network.target
+Conflicts=inky-slideshow.service inky133-style-evaluation.service inky133-phase3-experiment.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/home/bonsai/inky133-slideshow
+ExecStart=/home/bonsai/.virtualenvs/pimoroni/bin/python3 /home/bonsai/inky133-slideshow/experiments/inky133_apple_framework_enhancement/pi/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

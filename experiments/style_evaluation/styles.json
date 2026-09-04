@@ -1,0 +1,38 @@
+{
+  "classic": {
+    "label": "Classic",
+    "engine": "classic",
+    "description": "Production-equivalent person colour with monochrome background."
+  },
+  "illustrated": {
+    "label": "Illustrated",
+    "engine": "illustrated_preset",
+    "preset": "illustrated",
+    "description": "Skin-protected treatment with Spectra 6 pure colours for clothing and objects."
+  },
+  "poster": {
+    "label": "Poster",
+    "engine": "illustrated_preset",
+    "preset": "illustrated_strong",
+    "description": "Bold poster-like colour planes with strong pure-colour assignment."
+  },
+  "vintage": {
+    "label": "Vintage",
+    "engine": "vintage",
+    "saturation": 0.55,
+    "contrast": 0.96,
+    "pure_colour_strength": 0.58,
+    "skin_protection": 0.78,
+    "description": "Muted retro-print treatment led by red, yellow, black and white."
+  },
+  "watercolor": {
+    "label": "Watercolor",
+    "engine": "watercolor",
+    "saturation": 0.82,
+    "contrast": 0.90,
+    "blur_radius": 1.2,
+    "median_size": 5,
+    "skin_protection": 0.72,
+    "description": "Soft colour planes and reduced edge emphasis with protected skin."
+  }
+}

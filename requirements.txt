@@ -1,0 +1,4 @@
+Pillow
+inky
+gpiozero
+python-dotenv

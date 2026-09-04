@@ -1,0 +1,19 @@
+[Unit]
+Description=Inky133 Adaptive Enhancement Phase3 Experiment
+After=network.target
+Conflicts=inky-slideshow.service inky133-style-evaluation.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/home/bonsai/inky133-slideshow
+ExecStart=/home/bonsai/.virtualenvs/pimoroni/bin/python3 /home/bonsai/inky133-slideshow/experiments/inky133_adaptive_enhancement/pi/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
